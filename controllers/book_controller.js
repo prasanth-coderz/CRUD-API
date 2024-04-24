@@ -92,3 +92,79 @@ exports.deleteBook = async (req, res) => {
   }
 };
 
+// Pagination function
+exports.paginateBooks = async (req, res) => {
+  try {
+    const { page, limit, search, filters, sort } = req.body;
+    const pageNumber = parseInt(page) || 1;
+    const limitNumber = parseInt(limit) || 10;
+    const skip = (pageNumber - 1) * limitNumber;
+
+    const aggregationPipeline = [];
+
+    const matchQuery = {};
+    if (search) {
+      const fieldsToSearch = ["title", "author", "genre"];
+      matchQuery.$or = fieldsToSearch.map((field) => ({
+        [field]: { $regex: search, $options: "i" },
+      }));
+    }
+
+    let message = "";
+    if (!search) {
+      message = "All records are displayed because the search field is empty.";
+    }
+
+    if (filters) {
+      Object.keys(filters).forEach((field) => {
+        if (filters[field] !== "") {
+          matchQuery[field] = { $regex: filters[field], $options: "i" };
+        }
+      });
+    }
+    if (Object.keys(matchQuery).length > 0) {
+      aggregationPipeline.push({ $match: matchQuery });
+    }
+
+    // SORTING FUNCTIONALITY
+    if (sort && sort.order) {
+      const sortOptions = {};
+      const sortField = sort.field ? sort.field : "title"; // Default sort field "title"
+      sortOptions[sortField] = sort.order === "asc" ? 1 : -1;
+      aggregationPipeline.push({ $sort: sortOptions });
+    }
+
+    aggregationPipeline.push({ $skip: skip });
+    aggregationPipeline.push({ $limit: limitNumber });
+
+    const books = await Book.aggregate(aggregationPipeline);
+
+    let totalCount = 0;
+    let warningMessage = "";
+
+    if (books.length === 0 && search) {
+      warningMessage = "No records found matching the search term.";
+    } else {
+      totalCount = await Book.aggregate([
+        { $match: matchQuery },
+        { $count: "count" },
+      ]);
+    }
+    const totalRecords = totalCount.length > 0 ? totalCount[0].count : 0;
+    const RemainingPages = Math.max(totalRecords - pageNumber, 0);
+
+    res.json({
+      totalCount: totalRecords,
+      currentPage: warningMessage ? 0 : pageNumber,
+      totalPages: Math.ceil(totalRecords / limitNumber),
+      ...(message !== "" && { message }),
+      RemainingPages,
+      books,
+      ...(warningMessage !== "" && { warningMessage }),
+    });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: "Error on retrieving books", error: error.message });
+  }
+};
